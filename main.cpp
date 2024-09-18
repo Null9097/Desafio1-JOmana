@@ -1,215 +1,241 @@
-//#include <Wire.h>
+#include <Wire.h>
 #include <Adafruit_LiquidCrystal.h>
 
 Adafruit_LiquidCrystal lcd(0);
 int analogPin = A0;
-int16_t* arr = nullptr;
-int capacidad = 512;
-int indiceActual = 0;
-bool acquiringData = false;
+int16_t* arr = nullptr;  // Arreglo dinámico para valores analógicos
+int capacidad = 512;     // Capacidad inicial del arreglo
+int indiceActual = 0;    // Índice del arreglo
+bool acquiringData = false; // Estado de adquisición de datos
 
 int botonInicio = 7;
 int botonDetener = 4;
 
+// Variables de frecuencia y amplitud
 int16_t maxValue = INT16_MIN;
 int16_t minValue = INT16_MAX;
-unsigned long lastPeakTime = 0;
-unsigned long lastPeakTimePrev = 0;
-int peakCount = 0;
 float frecuencia = 0;
 float amplitud = 0;
+int crucePorCero = 0; // Contador para cruces por el punto medio
+unsigned long tiempoInicio = 0; // Tiempo de inicio de la adquisición
+unsigned long tiempoTotal = 0;  // Tiempo total de la adquisición
+
+// Variables para identificación de onda
+String tipoOnda = "Desconocida";
 
 void setup() {
     Serial.begin(9600);
     pinMode(botonInicio, INPUT_PULLUP);
     pinMode(botonDetener, INPUT_PULLUP);
     lcd.begin(16, 2);
-    arr = new int16_t[capacidad];
+    arr = new int16_t[capacidad]; // Inicialización del arreglo dinámico
 }
 
 void loop() {
     if (digitalRead(botonInicio) == HIGH) {
         iniciarAdquisicion();
     }
-
     if (digitalRead(botonDetener) == HIGH) {
         detenerAdquisicion();
     }
-
     if (acquiringData) {
         adquirirDatos();
-        printMemoryUsage();
     }
 }
 
-
+// Función para iniciar adquisición de datos
 void iniciarAdquisicion() {
     delete[] arr;
-    arr = new int16_t[capacidad];
+    arr = new int16_t[capacidad]; // Reasignar memoria
     indiceActual = 0;
-    maxValue = INT16_MIN; 
-    minValue = INT16_MAX; 
-    peakCount = 0; 
+    maxValue = INT16_MIN;
+    minValue = INT16_MAX;
+    crucePorCero = 0; // Reiniciar contador
     acquiringData = true;
+    tiempoInicio = millis(); // Guardar el tiempo de inicio
 
     lcd.clear();
     lcd.print("Adq. datos");
 }
 
+// Función para detener adquisición de datos
 void detenerAdquisicion() {
     acquiringData = false;
+    tiempoTotal = millis() - tiempoInicio; // Calcular tiempo total de adquisición
     
-    calcularAmplitudYFrecuencia();
-	  identificarFormaDeOnda();
-  
+    calcularAmplitud();
+    calcularFrecuencia(); // Basado en cruces por el punto medio
+    identificarTipoOnda(); // Lógica para identificar la onda
+
     lcd.clear();
     lcd.setCursor(0, 0);
-    lcd.print("Amp: ");
+    lcd.print("Amplitud ");
+    lcd.setCursor(0, 1);
     lcd.print(amplitud, 2);
     lcd.print(" V");
+    delay(2000);
 
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Frecuencia ");
     lcd.setCursor(0, 1);
-    lcd.print("Freq: ");
     lcd.print(frecuencia, 2);
     lcd.print(" Hz");
+    delay(2000);
+    
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Onda: ");
+    lcd.setCursor(0, 1);
+    lcd.print(tipoOnda);
+
+    // Mostrar datos en el Monitor Serial
+    Serial.println("Datos recopilados:");
+    Serial.println();
+    Serial.print("Amplitud: ");
+    Serial.println(amplitud, 2);
+    Serial.print("Frecuencia: ");
+    Serial.println(frecuencia, 2);
+    Serial.print("Tipo de onda: ");
+    Serial.println(tipoOnda);
 }
 
+// Función para adquirir datos del pin analógico
 void adquirirDatos() {
     int16_t valor = analogRead(analogPin);
-    
     arr[indiceActual] = valor;
-    Serial.println(arr[indiceActual]);
+    Serial.println(valor);
 
-    if (valor > maxValue) {
-        maxValue = valor;
+    // Actualizar valores máximo y mínimo
+    if (valor > maxValue) maxValue = valor;
+    if (valor < minValue) minValue = valor;
+
+    // Contar cruces por el punto medio
+    if (indiceActual > 0) {
+        int16_t medio = (maxValue + minValue) / 2;
+        if ((arr[indiceActual - 1] > medio && valor < medio) || (arr[indiceActual - 1] < medio && valor > medio)) {
+            crucePorCero++;
+        }
     }
+
+    indiceActual++;
+    if (indiceActual >= capacidad) indiceActual = 0; // Sobrescribir valores antiguos
+
+    delay(2); // 2 ms para una frecuencia de muestreo de 500 Hz
+}
+
+// Función para calcular la amplitud
+void calcularAmplitud() {
+    amplitud = (maxValue - minValue) * (5.0 / 1023.0);
+}
+
+// Función para calcular la frecuencia
+void calcularFrecuencia() {
+    if (crucePorCero > 1 && tiempoTotal > 0) {
+        float tiempoSegundos = tiempoTotal / 1000.0; // Convertir a segundos
+        frecuencia = (crucePorCero / 2.0) / tiempoSegundos; // Dividir cruces por 2 para obtener ciclos completos
+    } else {
+        frecuencia = 0;
+    }
+}
+
+// Función para identificar el tipo de onda
+void identificarTipoOnda() {
+    if (indiceActual < 20) { // Asegúrate de tener suficientes muestras
+        lcd.clear();
+        lcd.print("Datos insuficientes");
+        return;
+    }
+
+    tipoOnda = "Desconocida"; // Inicializar como desconocida
+
+    if (identificarOndaCuadrada()) {
+        tipoOnda = "Cuadrada";
+    } else if (identificarOndaSenoidal()) {
+        tipoOnda = "Senoidal";
+    } else if (identificarOndaTriangular()) {
+        tipoOnda = "Triangular";
+    }
+}
+
+/**
+ * Identifica si la onda es cuadrada.
+ */
+bool identificarOndaCuadrada() {
+    int16_t nivel1 = arr[0];
+    int16_t nivel2 = 0;
+    bool cambioDetectado = false;
     
-    if (valor < minValue) {
-        minValue = valor;
+    for (int i = 1; i < indiceActual; i++) {
+        if (!cambioDetectado && abs(arr[i] - nivel1) > 100) { // Detectar un salto significativo
+            nivel2 = arr[i];
+            cambioDetectado = true;
+        }
+        // Si encontramos un tercer nivel distinto de nivel1 o nivel2, no es cuadrada
+        else if (cambioDetectado && abs(arr[i] - nivel1) > 100 && abs(arr[i] - nivel2) > 100) {
+            return false;
+        }
     }
 
-    static int16_t prevValue = 0;  
-    if (valor > prevValue && (valor - minValue) > 5) {  
-        lastPeakTimePrev = lastPeakTime;
-        lastPeakTime = millis(); 
-        peakCount++;
+    return true; // Si solo tiene dos niveles, es cuadrada
+}
 
-        if (peakCount > 1) {
-            unsigned long intervalo = lastPeakTime - lastPeakTimePrev;
-            if (intervalo > 0) {
-                float freqActual = 1000.0 / intervalo; 
-                frecuencia += freqActual;
+/**
+ * Identifica si la onda es senoidal.
+ */
+bool identificarOndaSenoidal() {
+    int16_t pendienteAntesDelPico = 0;
+    int16_t pendienteDespuesDelPico = 0;
+    bool esSenoidal = true;
+
+    // Recorremos el arreglo buscando los picos
+    for (int i = 1; i < indiceActual - 1; i++) {
+        // Detectamos un pico positivo
+        if (arr[i] > arr[i - 1] && arr[i] > arr[i + 1]) {
+            pendienteAntesDelPico = arr[i] - arr[i - 1];
+            pendienteDespuesDelPico = arr[i + 1] - arr[i];
+            
+            // Verificar si la pendiente cambia gradualmente
+            if (abs(pendienteAntesDelPico - pendienteDespuesDelPico) > 20) { // Ajustar umbral si es necesario
+                esSenoidal = false; // Si cambia abruptamente, probablemente no es senoidal
+                break;
             }
         }
     }
     
-    prevValue = valor;  
-
-    indiceActual++;
-    
-    if (indiceActual >= capacidad) {
-        indiceActual = 0;
-    }
+    return esSenoidal;
 }
 
-void calcularAmplitudYFrecuencia() {
-   amplitud = (maxValue - minValue) * (5.0 / 1023.0);
-   
-   Serial.print("Amplitud: ");
-   Serial.print(amplitud);
-   Serial.println(" V");
-
-   if (peakCount > 1) {
-       frecuencia /= (peakCount - 1); // Dividir por el número de intervalos entre picos
-       Serial.print("Frecuencia: ");
-       Serial.print(frecuencia, 4); // Mostrar con mayor precisión
-       Serial.println(" Hz");
-   } else {
-       Serial.println("No se detectó una frecuencia válida");
-   }
-
-   maxValue = INT16_MIN; 
-   minValue = INT16_MAX; 
-   frecuencia = 0; 
-   peakCount = 0;
-}
-
-void printMemoryUsage() {
-   Serial.print("Memoria libre: ");
-   Serial.print(freeMemory());
-   Serial.println(" bytes");
-}
-
-int freeMemory() {
-   extern int __heap_start;
-   extern int *__brkval;
-   int v;
-   int* p=(int*)&v;
-   return (int)p-(int)__brkval;
-}
-
-void identificarFormaDeOnda() {
-  bool esCuadrada = identificarOndaCuadrada();
-  bool esTriangular = identificarOndaTriangular();
-
-  lcd.clear();
-  if (esCuadrada) {
-    lcd.print("Onda Cuadrada");
-  } else if (esTriangular) {
-    lcd.print("Onda Triangular");
-  } else {
-    lcd.print("Señal Desconocida");
-  }
-
-  Serial.print("Es cuadrada: ");
-  Serial.println(esCuadrada ? "Si" : "No");
-  Serial.print("Es triangular: ");
-  Serial.println(esTriangular ? "Si" : "No");
-}
-
-bool identificarOndaCuadrada() {
-  int16_t nivel1 = arr[0];
-  int16_t nivel2 = 0;
-  bool cambioDetectado = false;
-  
-  for (int i = 1; i < indiceActual; i++) {
-    if (!cambioDetectado && abs(arr[i] - nivel1) > 100) {
-      nivel2 = arr[i];
-      cambioDetectado = true;
-    }
-    else if (cambioDetectado && abs(arr[i] - nivel1) > 100 && abs(arr[i] - nivel2) > 100) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
+/**
+ * Identifica si la onda es triangular.
+ */
 bool identificarOndaTriangular() {
-  bool subiendo = arr[1] > arr[0];
-  
-  for (int i = 1; i < indiceActual - 1; i++) {
-    int16_t pendienteActual = arr[i+1] - arr[i];
-    int16_t pendienteAnterior = arr[i] - arr[i-1];
+    int16_t pendienteAntesDelPico = 0;
+    int16_t pendienteDespuesDelPico = 0;
+    bool esTriangular = true;
 
-    if (subiendo) {
-      if (pendienteActual < 0) {
-        subiendo = false;
-      }
-    } else {
-      if (pendienteActual > 0) {
-        subiendo = true;
-      }
+    // Recorremos el arreglo buscando los picos
+    for (int i = 1; i < indiceActual - 1; i++) {
+        // Detectamos un pico positivo
+        if (arr[i] > arr[i - 1] && arr[i] > arr[i + 1]) {
+            pendienteAntesDelPico = arr[i] - arr[i - 1];
+            pendienteDespuesDelPico = arr[i + 1] - arr[i];
+            
+            // Para una onda triangular, la pendiente solo cambia de signo pero se mantiene constante
+            if (abs(pendienteAntesDelPico) != abs(pendienteDespuesDelPico)) {
+                esTriangular = false;
+                break;
+            }
+        }
     }
-
-    if ((subiendo && pendienteActual <= 0) || (!subiendo && pendienteActual >= 0)) {
-      return false;
-    }
-  }
-
-  return true;
+    
+    return esTriangular;
 }
 
-void cleanup() { 
-     delete[] arr; 
+/**
+ * Libera la memoria utilizada por el arreglo dinámico.
+ */
+void liberarMemoria() {
+    delete[] arr;
+    arr = nullptr;
 }
