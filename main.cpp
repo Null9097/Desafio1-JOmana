@@ -116,6 +116,7 @@ void adquirirDatos() {
         if ((arr[indiceActual - 1] > medio && valor < medio) || (arr[indiceActual - 1] < medio && valor > medio)) {
             crucePorCero++;
         }
+      delay(2);
     }
 
     indiceActual++;
